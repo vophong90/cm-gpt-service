@@ -136,61 +136,208 @@ app.get('/whoami', (_req, res) =>
   })
 );
 
-// ==== /api/suggest ====  (gợi ý CLO)
+// ==== /api/suggest ====  (gợi ý CLO — bản có Bloom & YHCT+YHHĐ)
 app.post('/api/suggest', async (req, res) => {
   try {
     const {
       plo,
       ploText = '',
       course = {},
-      level = 'I',
-      bloomVerbs = [],
+      level = 'I',              // I | R | M | A
+      bloomVerbs = [],          // [{ verb, level }, ...] từ webapp (CSV Bloom người dùng tải)
       count = 6,
-      model // optional override
+      model                    // optional override
     } = req.body || {};
 
-    const verbs = (bloomVerbs || [])
-      .slice(0, 120)
-      .map(v => `${v.verb}(${v.level})`)
+    // Ánh xạ mức liên kết → bậc Bloom phù hợp
+    const LEVEL2BLOOM = {
+      I: ['Remember','Understand'],
+      R: ['Apply','Analyze'],
+      M: ['Analyze','Evaluate'],
+      A: ['Evaluate','Create']
+    };
+    const linkLevel = String(level || 'I').toUpperCase();
+    const targetBloomLevels = LEVEL2BLOOM[linkLevel] || LEVEL2BLOOM.I;
+
+    // Chuẩn hoá & lọc động từ từ client
+    const norm = (x) => {
+      if (!x) return null;
+      if (typeof x === 'string') return { verb: x.trim(), level: '' };
+      const v = String(x.verb || '').trim();
+      const l = String(x.level || '').trim();
+      return v ? { verb: v, level: l } : null;
+    };
+
+    const seen = new Set();
+    // Ưu tiên: chỉ lấy verbs có level thuộc targetBloomLevels; nếu rỗng thì fallback lấy tất cả
+    let filtered = (bloomVerbs || [])
+      .map(norm)
+      .filter(Boolean);
+
+    const byTarget = filtered.filter(x => targetBloomLevels.includes(x.level));
+    if (byTarget.length > 0) filtered = byTarget;
+
+    // Loại trùng theo động từ (không phân biệt hoa thường), cắt bớt cho gọn prompt
+    const uniq = [];
+    for (const it of filtered) {
+      const k = it.verb.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); uniq.push(it); }
+    }
+    const MAX_VERBS = 180; // tránh prompt quá dài
+    const verbsForPrompt = uniq.slice(0, MAX_VERBS)
+      .map(it => `${it.verb} (${it.level || '—'})`)
       .join(', ');
 
-    const prompt = `Bạn là chuyên gia xây dựng CLO.
-Yêu cầu: đề xuất ${count} CLO ngắn gọn bằng tiếng Việt cho học phần "${course.label || ''} — ${course.fullname || ''}" (tín chỉ: ${course.tong ?? ''}).
-Mỗi CLO có dạng: CLOx: <Động từ Bloom> <mô tả cụ thể, có đo lường>.
-PLO liên quan: ${plo} — ${ploText}
-Mức liên kết PLO–COURSE: ${level} (I/R/M/A). Ưu tiên dùng các động từ sau: ${verbs}.
-Trả về mỗi CLO trên **một dòng**. Không cần giải thích thêm.`;
+    // Fallback nếu danh sách rỗng hoàn toàn
+    const fallbackVerbs = ['Mô tả','Giải thích','Vận dụng','Phân tích','Đánh giá','Xây dựng'];
+    const VERB_LIST = verbsForPrompt || fallbackVerbs.join(', ');
+
+    // Thông tin học phần
+    const courseLabel = (course.label || course.id || '').trim();
+    const courseFull  = (course.fullname || '').trim();
+    const credits     = (course.tong ?? course.credits ?? '').toString();
+
+    // Prompt theo đặc tả của bạn (YHCT + YHĐ, đo lường, 1 ý, 25–30 từ, đúng COUNT dòng)
+    const prompt = `
+Bạn là chuyên gia xây dựng chuẩn đầu ra học phần y khoa tích hợp Y học hiện đại (YHHĐ) và Y học cổ truyền (YHCT).
+
+Nhiệm vụ: đề xuất ${count} CLO bằng tiếng Việt cho học phần "${courseLabel} — ${courseFull}" (TC: ${credits}).
+
+Mỗi CLO đúng chuẩn:
+- Bắt đầu bằng một ĐỘNG TỪ Bloom thuộc mức ${linkLevel} (chỉ chọn trong danh sách SAU; không lặp lại động từ nếu có thể).
+- Phù hợp và thể hiện rõ PLO ${plo}: ${ploText}
+- Bám sát đặc thù học phần này (thuật ngữ, quy trình, ca lâm sàng, đối tượng người bệnh…).
+- TÍNH ĐO LƯỜNG: nêu điều kiện/tiêu chí kiểm tra (ví dụ: theo hướng dẫn quốc gia, ≥80% tình huống chuẩn, trong 10 phút, dùng thước đo X, theo phác đồ Y…).
+- Với chương trình YHCT + YHHĐ: nếu thích hợp, thể hiện TÍCH HỢP (so sánh, phối hợp, chỉ định/chống chỉ định của cả hai hệ).
+
+Ràng buộc phong cách:
+- Mỗi CLO chỉ 1 ý (không nối “và”), tối đa 25–30 từ, viết súc tích.
+- Không giải thích thêm, không bullet, không đánh số bằng dấu chấm; mỗi CLO trên MỘT DÒNG dạng: CLOx: <nội dung>.
+
+DANH SÁCH ĐỘNG TỪ CHO PHÉP (chỉ dùng các từ này, ưu tiên phù hợp mức ${linkLevel}): ${VERB_LIST}
+
+Trả về đúng ${count} dòng, lần lượt: CLO1:, CLO2:, ..., CLO${count}:.
+`.trim();
 
     const modelName = pickModel('suggest', model);
 
     const rsp = await createResponseWithFallback({
       model: modelName,
       input: prompt,
-      // GPT-5: ngắn gọn + nhanh
-      text: { verbosity: 'low' },            // ← GPT-5 param (có fallback)
-      reasoning: { effort: 'minimal' },      // ← GPT-5 param (có fallback)
-      max_output_tokens: 800,
-      temperature: 0.5
+      text: { verbosity: 'low' },         // GPT-5 param (có fallback)
+      reasoning: { effort: 'minimal' },   // GPT-5 param (có fallback)
+      max_output_tokens: 900,
+      temperature: 0.4
     });
 
-    const text = rsp.output_text || '';
-    const items = linesToItems(text).slice(0, count);
-    res.json({ items, raw: text, model: modelName });
+    const raw = rsp.output_text || '';
+    // Tách thành từng dòng, bỏ bullet/số thứ tự nếu có
+    const items = linesToItems(raw)
+      .filter(line => /^CLO\s*\d+\s*:/.test(line)) // giữ các dòng bắt đầu bằng CLOx:
+      .slice(0, count);
+
+    // Nếu model không obey số lượng, cố cân chỉnh lại (lấy thêm dòng text thường)
+    while (items.length < count) {
+      const extras = linesToItems(raw).filter(s => !/^CLO\s*\d+\s*:/.test(s));
+      if (!extras.length) break;
+      items.push(`CLO${items.length+1}: ${extras.shift()}`);
+    }
+    res.json({ items: items.slice(0, count), raw, model: modelName });
   } catch (err) {
     console.error('[suggest_failed]', err?.message || err);
     res.status(500).json({ error: 'suggest_failed' });
   }
 });
 
-// ==== /api/evaluate ====  (đánh giá CLO ↔ PLO)
+// ==== /api/evaluate ====  (đánh giá CLO ↔ PLO — bản nâng cao YHCT+YHHD & Bloom)
 app.post('/api/evaluate', async (req, res) => {
   try {
-    const { plo, ploText = '', cloText = '', model } = req.body || {};
+    const {
+      plo,                 // "PLO1"
+      ploText = '',        // nội dung PLO
+      cloText = '',        // nội dung CLO cần đánh giá
+      level = 'I',         // I | R | M | A
+      course = {},         // { id, label, fullname, tong }
+      bloomVerbs = [],     // [{verb, level}] từ webapp (CSV Bloom)
+      model                // optional override
+    } = req.body || {};
 
-    const prompt = `Đánh giá mức phù hợp của CLO với PLO (ngắn gọn ≤ 120 từ, bullet nếu cần).
-- PLO (${plo}): ${ploText}
-- CLO: ${cloText}
-Hãy nêu: mức phù hợp (cao/vừa/thấp), điểm mạnh, điểm cần chỉnh sửa, gợi ý động từ Bloom/thước đo.`;
+    // Ánh xạ mức liên kết → bậc Bloom tham chiếu
+    const LEVEL2BLOOM = {
+      I: ['Remember','Understand'],
+      R: ['Apply','Analyze'],
+      M: ['Analyze','Evaluate'],
+      A: ['Evaluate','Create']
+    };
+    const linkLevel = String(level || 'I').toUpperCase();
+    const targetBloomLevels = LEVEL2BLOOM[linkLevel] || LEVEL2BLOOM.I;
+
+    // Lọc động từ theo bậc Bloom mong muốn (nếu không có, fallback toàn bộ)
+    const norm = (x) => {
+      if (!x) return null;
+      if (typeof x === 'string') return { verb: x.trim(), level: '' };
+      const v = String(x.verb || '').trim();
+      const l = String(x.level || '').trim();
+      return v ? { verb: v, level: l } : null;
+    };
+
+    const allVerbs = (bloomVerbs || []).map(norm).filter(Boolean);
+    const matched = allVerbs.filter(x => targetBloomLevels.includes(x.level));
+    const pool = (matched.length ? matched : allVerbs);
+
+    // Loại trùng & giới hạn độ dài danh sách
+    const seen = new Set();
+    const uniq = [];
+    for (const it of pool) {
+      const k = it.verb.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); uniq.push(it); }
+    }
+    const MAX_VERBS = 150;
+    const verbsForPrompt = uniq.slice(0, MAX_VERBS)
+      .map(it => `${it.verb} (${it.level || '—'})`)
+      .join(', ');
+
+    const fallbackVerbs = ['Mô tả','Giải thích','Vận dụng','Phân tích','Đánh giá','Xây dựng'];
+    const VERB_LIST = verbsForPrompt || fallbackVerbs.join(', ');
+
+    // Thông tin học phần
+    const courseLabel = (course.label || course.id || '').trim();
+    const courseFull  = (course.fullname || '').trim();
+    const credits     = (course.tong ?? course.credits ?? '').toString();
+
+    // Prompt đánh giá nâng cao (có rubric & gợi ý chỉnh)
+    const prompt = `
+Bạn là chuyên gia xây dựng & thẩm định CLO cho chương trình bác sĩ tích hợp Y học hiện đại (YHHD) và Y học cổ truyền (YHCT).
+
+BỐI CẢNH
+- Học phần: "${courseLabel} — ${courseFull}" (TC: ${credits})
+- PLO liên quan: ${plo}: ${ploText}
+- Mức liên kết PLO–COURSE: ${linkLevel} (I/R/M/A)
+- Danh sách ĐỘNG TỪ Bloom cho phép (ưu tiên đúng bậc ${linkLevel}): ${VERB_LIST}
+
+NHIỆM VỤ
+ĐÁNH GIÁ nội dung CLO sau (tiếng Việt):
+«${cloText}»
+
+YÊU CẦU ĐẦU RA — TRẢ KẾT QUẢ NGẮN GỌN, TIẾNG VIỆT, THEO ĐÚNG CÁC MỤC:
+1) **Phán quyết** (Cao/Vừa/Thấp) về mức phù hợp PLO & học phần + 1 câu giải thích.
+2) **Rubric (0–4 điểm từng tiêu chí; tổng quy ra /100)**:
+   - PLO alignment: mức thể hiện đúng ý PLO (0–4)
+   - Bloom & động từ: CLO mở đầu bằng động từ trong danh sách? bậc đúng mức ${linkLevel}? (0–4)
+   - Tính đo lường: có tiêu chí/chuẩn/nguỡng/thời gian/công cụ đo? (0–4)
+   - Phù hợp học phần: có thuật ngữ, quy trình, đối tượng người bệnh của học phần? (0–4)
+   - Tích hợp YHCT+YHHD (nếu phù hợp): so sánh/phối hợp/chỉ định–chống chỉ định? (0–4)
+   Viết dạng: Điểm: a,b,c,d,e; Tổng: X/20 → Y/100.
+3) **Điểm mạnh** (2–4 gạch đầu dòng ngắn).
+4) **Vấn đề & cách sửa** (2–4 gạch đầu dòng, hành động cụ thể).
+5) **Đề xuất phiên bản CLO đã chỉnh** (1 dòng, ≤ 25–30 từ, đúng 1 ý, bắt đầu bằng một ĐỘNG TỪ trong danh sách; có tiêu chí đo lường; nếu phù hợp, thể hiện tích hợp YHCT+YHHD). Định dạng: CLO*: <nội dung>.
+6) **Cảnh báo rủi ro** (nếu có: mơ hồ, 2 ý trong 1 CLO, không đo lường, sai bậc Bloom…).
+
+QUY TẮC
+- Ngắn gọn, rõ, không kèm giải thích ngoài các mục trên.
+- Không thêm bullet cho tiêu đề; dùng bullet ngắn gọn trong mục 3) và 4).
+- Luôn giữ tiếng Việt và đúng ngữ cảnh YHCT + YHHD.
+`.trim();
 
     const modelName = pickModel('evaluate', model);
 
@@ -198,9 +345,9 @@ Hãy nêu: mức phù hợp (cao/vừa/thấp), điểm mạnh, điểm cần ch
       model: modelName,
       input: prompt,
       // GPT-5: cân bằng chất lượng
-      text: { verbosity: 'medium' },       // ← GPT-5 param (có fallback)
-      reasoning: { effort: 'medium' },     // ← GPT-5 param (có fallback)
-      max_output_tokens: 360,
+      text: { verbosity: 'medium' },       // có fallback trong helper
+      reasoning: { effort: 'medium' },     // có fallback trong helper
+      max_output_tokens: 600,
       temperature: 0.2
     });
 
