@@ -227,9 +227,7 @@ Trả về đúng ${count} dòng, lần lượt: CLO1:, CLO2:, ..., CLO${count}:
       model: modelName,
       input: prompt,
       text: { verbosity: 'low' },         // GPT-5 param (có fallback)
-      reasoning: { effort: 'minimal' },   // GPT-5 param (có fallback)
-      max_output_tokens: 900,
-      temperature: 0.4
+      reasoning: { effort: 'minimal' }   // GPT-5 param (có fallback)
     });
 
     const raw = rsp.output_text || '';
@@ -349,10 +347,8 @@ QUY TẮC
       model: modelName,
       input: prompt,
       // GPT-5: cân bằng chất lượng
-      text: { verbosity: 'medium' },       // có fallback trong helper
-      reasoning: { effort: 'medium' },     // có fallback trong helper
-      max_output_tokens: 600,
-      temperature: 0.2
+      text: { verbosity: 'medium' }, 
+      reasoning: { effort: 'medium' }
     });
 
     const text = rsp.output_text || '';
