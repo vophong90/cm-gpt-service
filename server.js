@@ -126,7 +126,7 @@ async function createResponseWithFallback(params, { stripVerbosity = false, stri
 /** ====== Endpoints ====== */
 
 // Health & whoami
-app.get('/health', (_req, res) => res.status(200).send('ok'));
+app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 app.get('/whoami', (_req, res) =>
   res.json({
     ok: true,
@@ -143,7 +143,8 @@ app.post('/api/suggest', async (req, res) => {
       plo,
       ploText = '',
       course = {},
-      level = 'I',              // I | R | M | A
+      level: levelFromBody,            // I | R | M | A (cũ)
+      linkLevel: linkLevelFromBody, 
       bloomVerbs = [],          // [{ verb, level }, ...] từ webapp (CSV Bloom người dùng tải)
       count = 6,
       model                    // optional override
@@ -256,7 +257,8 @@ app.post('/api/evaluate', async (req, res) => {
       plo,                 // "PLO1"
       ploText = '',        // nội dung PLO
       cloText = '',        // nội dung CLO cần đánh giá
-      level = 'I',         // I | R | M | A
+      level: levelFromBody,            // I | R | M | A (cũ)
+      linkLevel: linkLevelFromBody, 
       course = {},         // { id, label, fullname, tong }
       bloomVerbs = [],     // [{verb, level}] từ webapp (CSV Bloom)
       model                // optional override
