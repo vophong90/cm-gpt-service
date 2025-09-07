@@ -157,7 +157,8 @@ app.post('/api/suggest', async (req, res) => {
       M: ['Analyze','Evaluate'],
       A: ['Evaluate','Create']
     };
-    const linkLevel = String(level || 'I').toUpperCase();
+    const LEVEL = linkLevelFromBody ?? levelFromBody ?? 'I';
+    const linkLevel = String(LEVEL).toUpperCase();
     const targetBloomLevels = LEVEL2BLOOM[linkLevel] || LEVEL2BLOOM.I;
 
     // Chuẩn hoá & lọc động từ từ client
@@ -271,7 +272,8 @@ app.post('/api/evaluate', async (req, res) => {
       M: ['Analyze','Evaluate'],
       A: ['Evaluate','Create']
     };
-    const linkLevel = String(level || 'I').toUpperCase();
+    const LEVEL = linkLevelFromBody ?? levelFromBody ?? 'I';
+    const linkLevel = String(LEVEL).toUpperCase();
     const targetBloomLevels = LEVEL2BLOOM[linkLevel] || LEVEL2BLOOM.I;
 
     // Lọc động từ theo bậc Bloom mong muốn (nếu không có, fallback toàn bộ)
